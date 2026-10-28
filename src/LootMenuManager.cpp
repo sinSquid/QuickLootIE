@@ -13,22 +13,44 @@ namespace QuickLoot
 {
 	bool LootMenuManager::IsShowing()
 	{
+		std::scoped_lock lock{ _lock };
 		return static_cast<bool>(_currentContainer);
 	}
 
 	void LootMenuManager::RequestShow(const RE::ObjectRefHandle& container)
 	{
-		if (!container || container == _currentContainer) {
-			return;
-		}
-
-		if (API::APIServer::DispatchOpeningLootMenuEvent(container) != API::HandleResult::kContinue) {
-			logger::info("Opening was canceled by API subscriber");
+		if (!container || !container.get()) {
 			RequestHide();
 			return;
 		}
 
+		std::uint64_t observedGeneration;
+		{
+			std::scoped_lock lock{ _lock };
+			if (container == _currentContainer) {
+				return;
+			}
+			observedGeneration = _generation;
+		}
+
+		if (API::APIServer::DispatchOpeningLootMenuEvent(container) != API::HandleResult::kContinue) {
+			logger::info("Opening was canceled by API subscriber");
+			std::scoped_lock lock{ _lock };
+			if (_generation == observedGeneration) {
+				EndSession(true);
+			}
+			return;
+		}
+
+		std::scoped_lock lock{ _lock };
+		if (_generation != observedGeneration) {
+			return;
+		}
+
 		Behaviors::ContainerAnimator::CloseContainer(_currentContainer);
+		if (_generation != observedGeneration) {
+			return;
+		}
 
 		if (!RE::PlayerCamera::GetSingleton()->IsInThirdPerson() ||
 			!Integrations::BetterThirdPersonSelection::Is3DWidgetEnabled()) {
@@ -40,40 +62,72 @@ namespace QuickLoot
 		}
 
 		_currentContainer = container;
+		const auto generation = ++_generation;
+		_pendingOpen = true;
+		_taskQueue.clear();
+		Input::InputManager::ResetActionState();
 		const auto index = container == _lastContainer ? _lastSelectedIndex : 0;
 
 		// This may trigger another call to RequestShow, so make sure it happens after _currentContainer is set.
 		Input::InputManager::BlockConflictingInputs();
+		if (_generation != generation) {
+			return;
+		}
 
 		EnsureOpen();
 
 		QueueLootMenuTask([=](LootMenu& menu) {
 			menu.Show(container, index);
-		});
+		},
+			true);
 	}
 
 	void LootMenuManager::RequestHide()
 	{
-		if (!IsShowing()) {
+		std::scoped_lock lock{ _lock };
+		EndSession(true);
+	}
+
+	void LootMenuManager::EndSession(bool sendHideMessage)
+	{
+		const auto previous = _currentContainer;
+		const auto generation = ++_generation;
+
+		_currentContainer.reset();
+		_pendingOpen = false;
+		_taskQueue.clear();
+		Input::InputManager::ResetActionState();
+		Behaviors::ActivationPrompt::Unblock();
+		Behaviors::ContainerAnimator::CloseContainer(previous);
+		if (_generation != generation) {
 			return;
 		}
 
-		Behaviors::ActivationPrompt::Unblock();
-		Behaviors::ContainerAnimator::CloseContainer(_currentContainer);
-
-		_currentContainer.reset();
-
-		// This may trigger another call to RequestHide, so make sure it happens after _currentContainer is reset.
+		// Repair the owned input group even if the logical menu was already closed.
 		Input::InputManager::UnblockConflictingInputs();
 
-		{
-			// kHide destroys the instance, so any pending messages would be run when the
-			// next loot menu instance is created. Here, we discard them instead.
-			std::scoped_lock lock{ _lock };
-			_taskQueue.clear();
+		if (sendHideMessage && previous && _generation == generation) {
+			if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+				queue->AddMessage(LootMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+			}
 		}
+	}
 
-		RE::UIMessageQueue::GetSingleton()->AddMessage(LootMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+	void LootMenuManager::OnMenuClosed()
+	{
+		std::scoped_lock lock{ _lock };
+		// An older queued Hide must not cancel a newer Show waiting on the UI thread.
+		if (!_pendingOpen) {
+			EndSession(false);
+		}
+	}
+
+	void LootMenuManager::ResetForLoad()
+	{
+		std::scoped_lock lock{ _lock };
+		EndSession(true);
+		_lastContainer.reset();
+		_lastSelectedIndex = 0;
 	}
 
 	void LootMenuManager::RequestRefresh(RefreshFlags flags)
@@ -108,13 +162,17 @@ namespace QuickLoot
 
 	void LootMenuManager::EnsureOpen()
 	{
-		if (!RE::UI::GetSingleton()->IsMenuOpen(LootMenu::MENU_NAME)) {
-			RE::UIMessageQueue::GetSingleton()->AddMessage(LootMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+		// Queue Show even if an old instance is still visible but already has a Hide pending.
+		if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+			queue->AddMessage(LootMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+		} else {
+			EndSession(false);
 		}
 	}
 
 	void LootMenuManager::SaveLastSelectedIndex(const RE::ObjectRefHandle& container, int selectedIndex)
 	{
+		std::scoped_lock lock{ _lock };
 		if (container.get()) {
 			_lastContainer = container;
 			_lastSelectedIndex = selectedIndex;
@@ -123,7 +181,7 @@ namespace QuickLoot
 
 	void LootMenuManager::ProcessPendingTasks(LootMenu& menu)
 	{
-		std::vector<LootMenuTask> tasks;
+		std::vector<PendingTask> tasks;
 
 		{
 			// Swap out the queue so queueing new tasks within another task
@@ -133,17 +191,26 @@ namespace QuickLoot
 		}
 
 		for (auto& task : tasks) {
-			task(menu);
+			std::scoped_lock lock{ _lock };
+			if (task.generation != _generation || !_currentContainer) {
+				continue;
+			}
+			task.task(menu);
+			if (task.opensMenu && task.generation == _generation) {
+				_pendingOpen = false;
+			}
 		}
 	}
 
-	void LootMenuManager::QueueLootMenuTask(LootMenuTask task)
+	void LootMenuManager::QueueLootMenuTask(LootMenuTask task, bool opensMenu)
 	{
 		if (!task) {
 			return;
 		}
 
 		std::scoped_lock lock{ _lock };
-		_taskQueue.push_back(std::move(task));
+		if (_currentContainer) {
+			_taskQueue.push_back({ _generation, std::move(task), opensMenu });
+		}
 	}
 }

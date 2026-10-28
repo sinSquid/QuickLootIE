@@ -72,7 +72,7 @@ namespace QuickLoot
 		RE::GFxValue _buttonBarProvider;
 
 		void InjectUtilsClass();
-		void LoadSwfObject(CLIK::Object& target, std::string_view path) const;
+		bool LoadSwfObject(CLIK::Object& target, std::string_view path) const;
 		RE::GFxValue BuildSettingsObject() const;
 		static void ResolveAnchorPoint(Config::AnchorPoint anchor, double& fractionX, double& fractionY);
 

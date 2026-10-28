@@ -19,6 +19,8 @@ namespace QuickLoot
 		static bool IsShowing();
 		static void RequestShow(const RE::ObjectRefHandle& container);
 		static void RequestHide();
+		static void OnMenuClosed();
+		static void ResetForLoad();
 		static void RequestRefresh(RefreshFlags flags);
 
 		static void OnInputAction(Input::QuickLootAction action);
@@ -29,14 +31,23 @@ namespace QuickLoot
 
 	private:
 		using LootMenuTask = std::function<void(LootMenu& menu)>;
+		struct PendingTask
+		{
+			std::uint64_t generation;
+			LootMenuTask task;
+			bool opensMenu;
+		};
 
 		static inline std::recursive_mutex _lock{};
-		static inline std::vector<LootMenuTask> _taskQueue{};
+		static inline std::vector<PendingTask> _taskQueue{};
 		static inline RE::ObjectRefHandle _currentContainer{};
 		static inline RE::ObjectRefHandle _lastContainer{};
 		static inline int _lastSelectedIndex = 0;
+		static inline std::uint64_t _generation = 0;
+		static inline bool _pendingOpen = false;
 
 		static void EnsureOpen();
-		static void QueueLootMenuTask(LootMenuTask task);
+		static void QueueLootMenuTask(LootMenuTask task, bool opensMenu = false);
+		static void EndSession(bool sendHideMessage);
 	};
 }

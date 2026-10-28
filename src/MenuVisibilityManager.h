@@ -14,6 +14,7 @@ namespace QuickLoot
 
 		static void DisableLootMenu(const std::string& modName);
 		static void EnableLootMenu(const std::string& modName);
+		static void ResetForLoad();
 
 		static void OnCameraStateChanged(RE::CameraState state);
 		static void OnCombatStateChanged(RE::ACTOR_COMBAT_STATE state);

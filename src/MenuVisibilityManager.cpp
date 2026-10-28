@@ -279,6 +279,15 @@ namespace QuickLoot
 		LootMenuManager::RequestRefresh(RefreshFlags::kInventory);
 	}
 
+	void MenuVisibilityManager::ResetForLoad()
+	{
+		_focusedRef.reset();
+		_currentContainer.reset();
+		_forcedContainer.reset();
+		// Keep explicit disabling requests owned by other mods.
+		LootMenuManager::ResetForLoad();
+	}
+
 	void MenuVisibilityManager::DisableLootMenu(const std::string& modName)
 	{
 		_disablingMods.insert(modName);
@@ -377,8 +386,11 @@ namespace QuickLoot
 			logger::debug("OnMenuOpenClose: {} {}", opening ? "Open" : "Close", std::string_view(menuName));
 		}
 
-		// Always ignore events related to the loot menu to avoid feedback loops
+		// Observe external closure without enqueueing a second Hide message.
 		if (menuName == LootMenu::MENU_NAME) {
+			if (!opening) {
+				LootMenuManager::OnMenuClosed();
+			}
 			return;
 		}
 

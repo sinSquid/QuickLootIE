@@ -1,7 +1,5 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
-#include "LootMenu.h"
-#include "SanityChecks.h"
 #include "Behaviors/ActivationPrompt.h"
 #include "Behaviors/LockpickActivation.h"
 #include "Config/Papyrus.h"
@@ -13,6 +11,9 @@
 #include "Integrations/Completionist.h"
 #include "Integrations/DismemberingFramework.h"
 #include "Integrations/NPCsNamesDistributor.h"
+#include "LootMenu.h"
+#include "LootMenuManager.h"
+#include "MenuVisibilityManager.h"
 #include "Observers/CameraStateObserver.h"
 #include "Observers/CombatStateObserver.h"
 #include "Observers/ContainerObserver.h"
@@ -22,11 +23,18 @@
 #include "Observers/LockChangedObserver.h"
 #include "Observers/MenuObserver.h"
 #include "Observers/SneakStateObserver.h"
+#include "SanityChecks.h"
 #include "Util/Profiler.h"
 
 static void OnSKSEMessage(SKSE::MessagingInterface::Message* msg)
 {
 	switch (msg->type) {
+	case SKSE::MessagingInterface::kPreLoadGame:
+	case SKSE::MessagingInterface::kPostLoadGame:
+	case SKSE::MessagingInterface::kNewGame:
+		QuickLoot::MenuVisibilityManager::ResetForLoad();
+		QuickLoot::Input::InputManager::ResetTransientState();
+		break;
 	case SKSE::MessagingInterface::kDataLoaded:
 		{
 			PROFILE_SCOPE_NAMED("SKSE Message (kDataLoaded)");

@@ -21,6 +21,8 @@ namespace QuickLoot::Input
 
 		static void BlockConflictingInputs();
 		static void UnblockConflictingInputs();
+		static void ResetActionState();
+		static void ResetTransientState();
 
 		static void HandleButtonEvent(const RE::ButtonEvent* event);
 		static void HandleThumbstickEvent(const RE::ThumbstickEvent* event);
@@ -32,8 +34,10 @@ namespace QuickLoot::Input
 		static inline std::set<DeviceKey> _allInputKeys{};
 		static inline std::set<DeviceKey> _allModifierKeys{};
 		static inline std::set<DeviceKey> _allHoldKeys{};
+		static inline std::set<DeviceKey> _sessionPressedKeys{};
 		static inline const RE::Setting* _grabDelaySetting = nullptr;
 		static inline bool _triggerOnActivateRelease = false;
+		static inline bool _activationPressValid = false;
 
 		static void ReloadKeybindings();
 		static Keybinding* FindConflictingKeybinding(const UserEventMapping&, DeviceType);
@@ -44,7 +48,7 @@ namespace QuickLoot::Input
 
 		static void SendFakeButtonEvent(DeviceType device, int idCode, float value, float heldDownSecs);
 
-		static bool HandleGrab(const RE::ButtonEvent* event, const Keybinding* keybinding);
+		static bool HandleGrab(const RE::ButtonEvent* event, Keybinding* keybinding);
 		static bool TryGrab();
 		static void TriggerKeybinding(const Keybinding* keybinding);
 		static void HandleHold(const RE::ButtonEvent* event, Keybinding* keybinding);

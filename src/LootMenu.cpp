@@ -96,12 +96,18 @@ namespace QuickLoot
 		uiMovie->SetVariable("_global.gfxExtensions", true);
 		InjectUtilsClass();
 
-		LoadSwfObject(_lootMenu, "_root.lootMenu"sv);
-		LoadSwfObject(_title, "_root.lootMenu.title"sv);
-		LoadSwfObject(_weight, "_root.lootMenu.weight"sv);
-		LoadSwfObject(_itemList, "_root.lootMenu.itemList"sv);
-		LoadSwfObject(_infoBar, "_root.lootMenu.infoBar"sv);
-		LoadSwfObject(_buttonBar, "_root.lootMenu.buttonBar"sv);
+		const bool objectsReady = LoadSwfObject(_lootMenu, "_root.lootMenu"sv) &&
+		                          LoadSwfObject(_title, "_root.lootMenu.title"sv) &&
+		                          LoadSwfObject(_weight, "_root.lootMenu.weight"sv) &&
+		                          LoadSwfObject(_itemList, "_root.lootMenu.itemList"sv) &&
+		                          LoadSwfObject(_infoBar, "_root.lootMenu.infoBar"sv) &&
+		                          LoadSwfObject(_buttonBar, "_root.lootMenu.buttonBar"sv);
+		if (!objectsReady) {
+			_cachedView.reset();
+			uiMovie.reset();
+			LootMenuManager::RequestHide();
+			return;
+		}
 
 		RE::GFxValue version;
 		if (_lootMenu.GetInstance().Invoke("getVersion", &version) && version.IsNumber()) {
@@ -168,14 +174,16 @@ namespace QuickLoot
 		uiMovie->SetVariable("_global.QuickLoot.Utils.log", quickLootLogFunction);
 	}
 
-	void LootMenu::LoadSwfObject(CLIK::Object& target, std::string_view path) const
+	bool LootMenu::LoadSwfObject(CLIK::Object& target, std::string_view path) const
 	{
 		auto& instance = target.GetInstance();
 		bool success = uiMovie->GetVariable(std::addressof(instance), path.data());
 
 		if (!success || !instance.IsObject()) {
 			logger::error("Failed to find variable {} in {}.swf", path, FILE_NAME);
+			return false;
 		}
+		return true;
 	}
 
 	RE::GFxValue LootMenu::BuildSettingsObject() const
@@ -279,6 +287,7 @@ namespace QuickLoot
 	void LootMenu::Show(const RE::ObjectRefHandle& container, int selectedIndex)
 	{
 		if (!uiMovie) {
+			LootMenuManager::RequestHide();
 			return;
 		}
 
@@ -840,6 +849,10 @@ namespace QuickLoot
 
 	void LootMenu::AdvanceMovie(float interval, std::uint32_t currentTime)
 	{
+		if (!uiMovie) {
+			LootMenuManager::RequestHide();
+			return;
+		}
 		// First run all queued tasks, which may set refresh flags
 		LootMenuManager::ProcessPendingTasks(*this);
 
@@ -912,7 +925,7 @@ namespace QuickLoot
 
 	void LootMenu::PostCreate()
 	{
-		if (!REL::Module::IsVR()) {
+		if (!uiMovie || !REL::Module::IsVR()) {
 			return;
 		}
 

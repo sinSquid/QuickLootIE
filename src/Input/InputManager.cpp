@@ -154,27 +154,62 @@ namespace QuickLoot::Input
 
 	void InputManager::BlockConflictingInputs()
 	{
-		RE::ControlMap::GetSingleton()->ToggleControls(QUICKLOOT_EVENT_GROUP_FLAG, false, false);
+		if (const auto controlMap = RE::ControlMap::GetSingleton()) {
+			controlMap->ToggleControls(QUICKLOOT_EVENT_GROUP_FLAG, false, false);
+		}
 
 		if (REL::Module::IsVR()) {
 			// VR bypasses the standard input group system, so these conflicting input handlers need to be disabled manually.
 			const auto playerControls = RE::PlayerControls::GetSingleton();
-			playerControls->sneakHandler->SetInputEventHandlingEnabled(false);
-			playerControls->jumpHandler->SetInputEventHandlingEnabled(false);
-			playerControls->activateHandler->SetInputEventHandlingEnabled(false);
+			if (playerControls) {
+				if (playerControls->sneakHandler)
+					playerControls->sneakHandler->SetInputEventHandlingEnabled(false);
+				if (playerControls->jumpHandler)
+					playerControls->jumpHandler->SetInputEventHandlingEnabled(false);
+				if (playerControls->activateHandler)
+					playerControls->activateHandler->SetInputEventHandlingEnabled(false);
+			}
 		}
 	}
 
 	void InputManager::UnblockConflictingInputs()
 	{
-		RE::ControlMap::GetSingleton()->ToggleControls(QUICKLOOT_EVENT_GROUP_FLAG, true, false);
+		if (const auto controlMap = RE::ControlMap::GetSingleton()) {
+			controlMap->ToggleControls(QUICKLOOT_EVENT_GROUP_FLAG, true, false);
+		}
 
 		if (REL::Module::IsVR()) {
 			const auto playerControls = RE::PlayerControls::GetSingleton();
-			playerControls->sneakHandler->SetInputEventHandlingEnabled(true);
-			playerControls->jumpHandler->SetInputEventHandlingEnabled(true);
-			playerControls->activateHandler->SetInputEventHandlingEnabled(true);
+			if (playerControls) {
+				if (playerControls->sneakHandler)
+					playerControls->sneakHandler->SetInputEventHandlingEnabled(true);
+				if (playerControls->jumpHandler)
+					playerControls->jumpHandler->SetInputEventHandlingEnabled(true);
+				if (playerControls->activateHandler)
+					playerControls->activateHandler->SetInputEventHandlingEnabled(true);
+			}
 		}
+	}
+
+	void InputManager::ResetActionState()
+	{
+		_triggerOnActivateRelease = false;
+		_activationPressValid = false;
+		_sessionPressedKeys.clear();
+		for (auto& keybinding : _keybindings) {
+			if (keybinding.flags.none(KeybindingFlags::kGlobal)) {
+				keybinding.nextRetriggerTime = 0.0f;
+			}
+		}
+	}
+
+	void InputManager::ResetTransientState()
+	{
+		ResetActionState();
+		for (auto& keybinding : _keybindings) {
+			keybinding.nextRetriggerTime = 0.0f;
+		}
+		UpdateModifierStates();
 	}
 
 	void InputManager::HandleButtonEvent(const RE::ButtonEvent* event)
@@ -188,6 +223,22 @@ namespace QuickLoot::Input
 		if (!_allInputKeys.contains(eventKey)) {
 			return;
 		}
+		if (event->IsDown()) {
+			for (auto& binding : _keybindings) {
+				if (binding.inputKey == eventKey) {
+					binding.nextRetriggerTime = 0.0f;
+				}
+			}
+			if (LootMenuManager::IsShowing()) {
+				_sessionPressedKeys.insert(eventKey);
+			} else {
+				_sessionPressedKeys.erase(eventKey);
+			}
+		}
+		const bool currentSessionPress = _sessionPressedKeys.contains(eventKey);
+		if (!event->IsPressed()) {
+			_sessionPressedKeys.erase(eventKey);
+		}
 
 		Keybinding* keybinding = FindSatisfiedKeybinding(eventKey, event->HeldDuration());
 
@@ -195,7 +246,7 @@ namespace QuickLoot::Input
 			return;
 		}
 
-		if (!keybinding) {
+		if (!keybinding || (!currentSessionPress && keybinding->flags.none(KeybindingFlags::kGlobal))) {
 			return;
 		}
 
@@ -502,7 +553,7 @@ namespace QuickLoot::Input
 		}
 	}
 
-	bool InputManager::HandleGrab(const RE::ButtonEvent* event, const Keybinding* keybinding)
+	bool InputManager::HandleGrab(const RE::ButtonEvent* event, Keybinding* keybinding)
 	{
 		if (REL::Module::IsVR()) {
 			return false;
@@ -513,20 +564,50 @@ namespace QuickLoot::Input
 		if (event->GetIDCode() != activateKey) {
 			return false;
 		}
+		const auto eventKey = NormalizeDeviceKey(event->GetDevice(), event->GetIDCode());
 
 		if (event->IsDown()) {
-			_triggerOnActivateRelease = LootMenuManager::IsShowing();
+			_activationPressValid = LootMenuManager::IsShowing();
+			_triggerOnActivateRelease = _activationPressValid;
+			for (auto& binding : _keybindings) {
+				if (binding.inputKey == eventKey)
+					binding.nextRetriggerTime = 0.0f;
+			}
 			return true;
 		}
 
 		// For the activate key, the up event is used to trigger the action.
-		if (!event->IsPressed() && _triggerOnActivateRelease && keybinding) {
-			TriggerKeybinding(keybinding);
+		if (!event->IsPressed()) {
+			const bool triggerOnRelease = _activationPressValid && _triggerOnActivateRelease;
 			_triggerOnActivateRelease = false;
+			_activationPressValid = false;
+			for (auto& binding : _keybindings) {
+				if (binding.inputKey == eventKey)
+					binding.nextRetriggerTime = 0.0f;
+			}
+			if (keybinding && keybinding->flags.all(KeybindingFlags::kOnHold)) {
+				keybinding->nextRetriggerTime = 0.0f;
+			} else if (triggerOnRelease && keybinding) {
+				TriggerKeybinding(keybinding);
+			}
+			return true;
+		}
+		if (!_activationPressValid) {
 			return true;
 		}
 
-		if (!event->IsHeld() || event->HeldDuration() < _grabDelaySetting->GetFloat()) {
+		const bool hasExplicitHold = std::ranges::any_of(_keybindings, [&](const Keybinding& binding) {
+			return binding.inputKey == eventKey && binding.isModifierSatisfied && binding.flags.all(KeybindingFlags::kOnHold);
+		});
+		if (hasExplicitHold) {
+			if (keybinding && keybinding->flags.all(KeybindingFlags::kOnHold)) {
+				HandleHold(event, keybinding);
+				_triggerOnActivateRelease = false;
+			}
+			return true;
+		}
+
+		if (!event->IsHeld() || !_grabDelaySetting || event->HeldDuration() < _grabDelaySetting->GetFloat()) {
 			return true;
 		}
 
